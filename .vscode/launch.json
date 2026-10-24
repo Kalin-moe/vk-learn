@@ -1,0 +1,17 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Debug VulkanTutorial (MSYS2 GCC)",
+			"type": "lldb",
+			"request": "launch",
+			"program": "${workspaceFolder}/build/VulkanTutorial/VulkanTutorial.exe",
+			"cwd": "${workspaceFolder}/build/VulkanTutorial",
+			"args": [],
+			"env": {
+				"PATH": "C:\\msys64\\ucrt64\\bin;${env:PATH}"
+			},
+			"preLaunchTask": "Build VulkanTutorial (MSYS2 GCC)"
+		}
+	]
+}

@@ -1,0 +1,53 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Configure VulkanTutorial (MSYS2 GCC)",
+			"type": "process",
+			"command": "C:\\msys64\\ucrt64\\bin\\cmake.exe",
+			"args": [
+				"-S",
+				"${workspaceFolder}",
+				"-B",
+				"${workspaceFolder}\\build",
+				"-G",
+				"Ninja",
+				"-DCMAKE_MAKE_PROGRAM=C:\\msys64\\ucrt64\\bin\\ninja.exe",
+				"-DCMAKE_BUILD_TYPE=Debug",
+				"-DCMAKE_CXX_COMPILER=C:\\msys64\\ucrt64\\bin\\g++.exe",
+				"-DCMAKE_PREFIX_PATH=C:\\msys64\\ucrt64",
+				"-DVulkan_INCLUDE_DIR=C:\\msys64\\ucrt64\\include",
+				"-DVulkan_LIBRARY=C:\\msys64\\ucrt64\\lib\\libvulkan-1.dll.a",
+				"-DSLANGC_EXECUTABLE=C:\\VulkanSDK\\1.4.363.0\\Bin\\slangc.exe"
+			],
+			"options": {
+				"env": {
+					"PATH": "C:\\msys64\\ucrt64\\bin;${env:PATH}",
+					"VULKAN_SDK": "C:\\VulkanSDK\\1.4.363.0"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Build VulkanTutorial (MSYS2 GCC)",
+			"type": "process",
+			"command": "C:\\msys64\\ucrt64\\bin\\cmake.exe",
+			"args": [
+				"--build",
+				"${workspaceFolder}\\build",
+				"--target",
+				"VulkanTutorial"
+			],
+			"options": {
+				"env": {
+					"PATH": "C:\\msys64\\ucrt64\\bin;${env:PATH}",
+					"VULKAN_SDK": "C:\\VulkanSDK\\1.4.363.0"
+				}
+			},
+			"dependsOn": "Configure VulkanTutorial (MSYS2 GCC)",
+			"dependsOrder": "sequence",
+			"group": "build",
+			"problemMatcher": []
+		}
+	]
+}
