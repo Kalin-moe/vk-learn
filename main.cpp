@@ -1,4 +1,11 @@
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 #include <memory>
+#include <stdexcept>
+#include <string>
+
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES) // 取决于是否启用了CPP20模块
 #	include <vulkan/vulkan_raii.hpp>
 #else
@@ -6,12 +13,8 @@ import vulkan_hpp; // 对于旧版VSC进行回退
 #endif
 #include <GLFW/glfw3.h>
 
-#include <cstdlib>
-#include <iostream> // 用于标准输入输出
-#include <stdexcept> // 用于抛出异常
-
-const uint32_t WIDTH  = 800;
-const uint32_t HEIGHT = 600;
+constexpr uint32_t WIDTH  = 800;
+constexpr uint32_t HEIGHT = 600;
 
 class HelloTriangleApplication
 {
@@ -26,6 +29,8 @@ class HelloTriangleApplication
 
   private:
 	GLFWwindow *window = nullptr; // 新增私有类成员保存窗口的引用
+	vk::raii::Context context;
+	vk::raii::Instance instance = nullptr;
 
 	void initWindow() // note: wayland下必须绘制东西才会显示窗口
 	{
@@ -39,6 +44,7 @@ class HelloTriangleApplication
 
 	void initVulkan()
 	{
+		createInstance();
 	}
 
 	void mainLoop()
@@ -54,6 +60,37 @@ class HelloTriangleApplication
 		glfwDestroyWindow(window); // 销毁窗口
 
 		glfwTerminate(); // 终止GLFW库
+	}
+
+	void createInstance()
+	{
+		constexpr vk::ApplicationInfo appInfo{.pApplicationName   = "Hello Triangle",
+		                                      .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+		                                      .pEngineName        = "No Engine",
+		                                      .engineVersion      = VK_MAKE_VERSION(1, 0, 0),
+		                                      .apiVersion         = vk::ApiVersion14};
+
+		// 从 GLFW 获取所需的实例扩展。
+		uint32_t glfwExtensionCount = 0;
+		auto glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+		// 检查 Vulkan 实现是否支持所需的 GLFW 扩展。
+		auto extensionProperties = context.enumerateInstanceExtensionProperties();
+		for (uint32_t i = 0; i < glfwExtensionCount; ++i)
+		{
+			if (std::ranges::none_of(extensionProperties,
+			                         [glfwExtension = glfwExtensions[i]](auto const &extensionProperty)
+			                         { return std::strcmp(extensionProperty.extensionName, glfwExtension) == 0; }))
+			{
+				throw std::runtime_error("Required GLFW extension not supported: " + std::string(glfwExtensions[i]));
+			}
+		}
+
+		vk::InstanceCreateInfo createInfo{
+		    .pApplicationInfo        = &appInfo,
+		    .enabledExtensionCount   = glfwExtensionCount,
+		    .ppEnabledExtensionNames = glfwExtensions};
+		instance = vk::raii::Instance(context, createInfo); // 创建 Vulkan 实例
 	}
 };
 

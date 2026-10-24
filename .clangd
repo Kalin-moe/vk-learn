@@ -1,0 +1,5 @@
+# 本项目依赖 C++20（std::ranges、指定初始化器）。
+# CMake 生成 compile_commands.json 时不会写出 -std，因为 GCC 16 默认已是 C++20；
+# 这里显式补上，保证 clangd 与构建使用同一标准。
+CompileFlags:
+  Add: [-std=gnu++20]

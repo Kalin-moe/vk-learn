@@ -14,6 +14,9 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake")
 
+# 生成 compile_commands.json，供 clangd 等语言服务使用
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 find_package(Vulkan 1.4.335 REQUIRED)

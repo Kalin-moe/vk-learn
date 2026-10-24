@@ -1,0 +1,12 @@
+# CMake / Ninja 构建输出
+/build/
+/compile_commands.json
+
+# clangd 索引缓存
+/.cache/
+
+# 本机编辑器配置（包含本机绝对路径）
+/.vscode/c_cpp_properties.json
+
+# 着色器编译产物
+*.spv
