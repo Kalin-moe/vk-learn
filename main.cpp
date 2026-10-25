@@ -12,6 +12,7 @@
 #else
 import vulkan_hpp; // 对于旧版VSC进行回退
 #endif
+#define GLFW_INCLUDE_VULKAN // 使用 glfwCreateWindowSurface 时需要
 #include <GLFW/glfw3.h>
 
 constexpr uint32_t WIDTH  = 800;
@@ -44,6 +45,7 @@ class HelloTriangleApplication
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr; // 调试信使，可以有多个
+	vk::raii::SurfaceKHR surface = nullptr; // 窗口表面
 	vk::raii::PhysicalDevice physicalDevice = nullptr; // 选中的物理设备
 
 	void initWindow() // note: wayland下必须绘制东西才会显示窗口
@@ -60,16 +62,26 @@ class HelloTriangleApplication
 	{
 		createInstance();
 		setupDebugMessenger();
+		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
 	}
 
+	void createSurface()
+	{
+		VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+		if (glfwCreateWindowSurface(*instance, window, nullptr, &rawSurface) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create window surface!");
+		}
+		surface = vk::raii::SurfaceKHR(instance, rawSurface);
+	}
 
 	/*
 	当然，你也可以把候选项的名字显示出来，让用户自行选择。
 	本教程会使用四条标准，物理设备必须全部满足才会被选中：
 	- 支持 Vulkan 1.3， 
-	- 拥有支持图形操作的队列族， 
+	- 拥有同时支持图形操作和向窗口表面呈现的队列族， 
 	- 支持全部必需的扩展（这里只需要 vk::KHRSwapchainExtensionName），并且
 	- 支持全部必需的特性.
 */
@@ -89,9 +101,17 @@ class HelloTriangleApplication
 		// 检查物理设备是否支持 Vulkan 1.3 API 版本，看物理设备属性中的 apiVersion
 		bool supportsVulkan1_3 = physicalDevice.getProperties().apiVersion >= vk::ApiVersion13;
 
-		// 检查是否有队列族支持图形操作。（几乎所有的Vulkan操作都需要队列族！有的显卡只有传输队列族没有图形队列族）
-		auto queueFamilies    = physicalDevice.getQueueFamilyProperties();
-		bool supportsGraphics = std::ranges::any_of( queueFamilies, []( auto const & qfp ) { return !!( qfp.queueFlags & vk::QueueFlagBits::eGraphics ); } );
+		// 检查是否有队列族同时支持图形操作和向窗口表面呈现（present）。（几乎所有的Vulkan操作都需要队列族！有的显卡只有传输队列族没有图形队列族）
+		auto queueFamilies = physicalDevice.getQueueFamilyProperties();
+		uint32_t qfpIndex  = 0;
+		bool supportsGraphicsAndPresent =
+			std::ranges::any_of( queueFamilies,
+								 [&physicalDevice, &surface = this->surface, &qfpIndex]( auto const & qfp )
+								 {
+								 bool const suitable = ( qfp.queueFlags & vk::QueueFlagBits::eGraphics ) && physicalDevice.getSurfaceSupportKHR( qfpIndex, *surface );
+								 qfpIndex++;
+								 return suitable;
+								 } );
 
 		// 检查所有必需的物理设备扩展是否可用，目前只需要vk::KHRSwapchainExtensionName
 		auto availableDeviceExtensions = physicalDevice.enumerateDeviceExtensionProperties();
@@ -114,7 +134,7 @@ class HelloTriangleApplication
 										features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
 		// 物理设备满足全部标准时返回 true
-		return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
+		return supportsVulkan1_3 && supportsGraphicsAndPresent && supportsAllRequiredExtensions && supportsRequiredFeatures;
 		}
 
 		void pickPhysicalDevice()
@@ -185,17 +205,32 @@ class HelloTriangleApplication
 
 	// 创建逻辑设备用于和物理设备对接
 	vk::raii::Device device = nullptr; // 保存逻辑设备句柄。
+	vk::raii::Queue graphicsQueue = nullptr; // 保存图形队列句柄。设备销毁时，设备队列会被隐式清理，因此 cleanup 中无需做任何事。
 	void createLogicalDevice()
 	{
 		// 指定要创建的队列族和队列数量。这里我们只需要一个图形队列。
 		std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
-		auto graphicsQueueFamilyProperty = std::ranges::find_if(queueFamilyProperties, [](auto const &qfp) { return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0); });
-		auto graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties.begin(), graphicsQueueFamilyProperty));
+
+		// 找到第一个同时支持图形操作和向窗口表面呈现的队列族
+		uint32_t queueIndex = ~0u;
+		for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++)
+		{
+			if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
+			    physicalDevice.getSurfaceSupportKHR(qfpIndex, *surface))
+			{
+				queueIndex = qfpIndex;
+				break;
+			}
+		}
+		if (queueIndex == ~0u)
+		{
+			throw std::runtime_error("Could not find a queue for graphics and present -> terminating");
+		}
 
 		// 必须使用浮点数分配优先级，范围0.0-1.0，1.0表示最高优先级。这里我们只需要一个队列，所以只需要一个优先级。
 		// 可以在多个线程上分别创建命令缓冲区，然后在主线程上用一次低开销调用把它们全部提交。另外个人电脑单线程CPU目前基本绝迹。
 		float queuePriority = 0.5f;
-		vk::DeviceQueueCreateInfo deviceQueueCreateInfo { .queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority };
+		vk::DeviceQueueCreateInfo deviceQueueCreateInfo { .queueFamilyIndex = queueIndex, .queueCount = 1, .pQueuePriorities = &queuePriority };
 		vk::PhysicalDeviceFeatures deviceFeatures; // 目前我们不需要任何特性，所以定义它、让所有字段保持 vk::False 即可。
 		// 创建一条特性结构体链
 		vk::StructureChain<vk::PhysicalDeviceFeatures2, // 结构链。通过设置各结构体之间的 pNext 指针，自动把它们连接起来，省去了手动逐个链接的麻烦。
@@ -227,8 +262,7 @@ class HelloTriangleApplication
 		device = vk::raii::Device(physicalDevice, deviceCreateInfo);
 
 		// 用于保存图形队列的句柄的类
-		vk::raii::Queue graphicsQueue = nullptr; // 设备销毁时，设备队列会被隐式清理，因此 cleanup 中无需做任何事。
-		graphicsQueue = vk::raii::Queue(device, graphicsIndex, 0); // 可以用 vk::raii::Queue 构造函数取得某个队列族的队列句柄。参数是逻辑设备、队列族索引和队列索引。由于我们只从这个族里创建一个队列，队列索引直接用 0
+		graphicsQueue = vk::raii::Queue(device, queueIndex, 0); // 可以用 vk::raii::Queue 构造函数取得某个队列族的队列句柄。参数是逻辑设备、队列族索引和队列索引。由于我们只从这个族里创建一个队列，队列索引直接用 0
 
 	}
 
