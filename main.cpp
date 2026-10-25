@@ -2,7 +2,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <memory>
+// #include <memory>
 #include <stdexcept>
 #include <string>
 #include <map>
@@ -61,6 +61,7 @@ class HelloTriangleApplication
 		createInstance();
 		setupDebugMessenger();
 		pickPhysicalDevice();
+		createLogicalDevice();
 	}
 
 
@@ -182,6 +183,54 @@ class HelloTriangleApplication
 // 在旅途中，莉莉遇到了一只受伤的小狐狸。小狐狸告诉莉莉，它迷路了，找不到回家的路。莉莉决定帮助小狐狸，于是他们一起踏上了寻找宝石的旅程。经过许多挑战和困难，他们互相支持，逐渐建立了深厚的友谊。
 // 最终，他们找到了那颗神奇的宝石。小狐狸许下了一个愿望，希望莉莉能够永远快乐和安全。莉莉感动得流下了眼泪，她意识到，真正的宝藏不是宝石，而是他们之间的友谊和勇气。
 
+	// 创建逻辑设备用于和物理设备对接
+	vk::raii::Device device = nullptr; // 保存逻辑设备句柄。
+	void createLogicalDevice()
+	{
+		// 指定要创建的队列族和队列数量。这里我们只需要一个图形队列。
+		std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
+		auto graphicsQueueFamilyProperty = std::ranges::find_if(queueFamilyProperties, [](auto const &qfp) { return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0); });
+		auto graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties.begin(), graphicsQueueFamilyProperty));
+
+		// 必须使用浮点数分配优先级，范围0.0-1.0，1.0表示最高优先级。这里我们只需要一个队列，所以只需要一个优先级。
+		// 可以在多个线程上分别创建命令缓冲区，然后在主线程上用一次低开销调用把它们全部提交。另外个人电脑单线程CPU目前基本绝迹。
+		float queuePriority = 0.5f;
+		vk::DeviceQueueCreateInfo deviceQueueCreateInfo { .queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority };
+		vk::PhysicalDeviceFeatures deviceFeatures; // 目前我们不需要任何特性，所以定义它、让所有字段保持 vk::False 即可。
+		// 创建一条特性结构体链
+		vk::StructureChain<vk::PhysicalDeviceFeatures2, // 结构链。通过设置各结构体之间的 pNext 指针，自动把它们连接起来，省去了手动逐个链接的麻烦。
+						vk::PhysicalDeviceVulkan11Features,
+						vk::PhysicalDeviceVulkan13Features,
+						vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+			featureChain = {
+				{},                                    // vk::PhysicalDeviceFeatures2（暂时为空）
+				{.shaderDrawParameters = true},        // 启用 Vulkan 1.1 的着色器绘制参数
+				{.dynamicRendering = true},            // 启用 Vulkan 1.3 的动态渲染
+				{.extendedDynamicState = true}         // 启用该扩展的扩展动态状态
+			};
+		std::vector<const char*> requiredDeviceExtension = { // 这个扩展是是把渲染好的图像呈现到窗口所必需的。
+  	  	vk::KHRSwapchainExtensionName};
+
+		// 填写结构体
+		vk::DeviceCreateInfo deviceCreateInfo{ // 如今不再区分区分实例级和设备级的验证层，enabledLayerCount 和 ppEnabledLayerNames 字段会被最新的实现忽略。
+			// featureChain.get<T>() 取得链中第一个结构体（即 vk::PhysicalDeviceFeatures2）的引用，
+			// 把它的地址赋给 pNext，作为整条特性链的入口。
+			// 由于 vk::StructureChain 已经自动设置好链中相邻结构体之间的 pNext 指针，
+			// Vulkan 顺着这条 pNext 指针链就能看到我们想启用的所有特性，无需再逐个手动链接。
+			.pNext                   = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
+			.queueCreateInfoCount    = 1,
+			.pQueueCreateInfos       = &deviceQueueCreateInfo,
+			.enabledExtensionCount   = static_cast<uint32_t>(requiredDeviceExtension.size()),
+			.ppEnabledExtensionNames = requiredDeviceExtension.data()
+		};
+		// 继续创建逻辑设备，并把特性链接到它上面
+		device = vk::raii::Device(physicalDevice, deviceCreateInfo);
+
+		// 用于保存图形队列的句柄的类
+		vk::raii::Queue graphicsQueue = nullptr; // 设备销毁时，设备队列会被隐式清理，因此 cleanup 中无需做任何事。
+		graphicsQueue = vk::raii::Queue(device, graphicsIndex, 0); // 可以用 vk::raii::Queue 构造函数取得某个队列族的队列句柄。参数是逻辑设备、队列族索引和队列索引。由于我们只从这个族里创建一个队列，队列索引直接用 0
+
+	}
 
 	void mainLoop()
 	{
