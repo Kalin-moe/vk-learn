@@ -5,6 +5,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <map>
 
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES) // 取决于是否启用了CPP20模块
 #	include <vulkan/vulkan_raii.hpp>
@@ -21,7 +22,7 @@ const std::vector<char const*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
 
-#ifdef NDEBUG
+#ifdef NDEBUG // 如果定义了NDEBUG宏，则禁用验证层
 constexpr bool enableValidationLayers = false;
 #else
 constexpr bool enableValidationLayers = true;
@@ -43,6 +44,7 @@ class HelloTriangleApplication
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr; // 调试信使，可以有多个
+	vk::raii::PhysicalDevice physicalDevice = nullptr; // 选中的物理设备
 
 	void initWindow() // note: wayland下必须绘制东西才会显示窗口
 	{
@@ -58,7 +60,128 @@ class HelloTriangleApplication
 	{
 		createInstance();
 		setupDebugMessenger();
+		pickPhysicalDevice();
 	}
+
+
+	/*
+	当然，你也可以把候选项的名字显示出来，让用户自行选择。
+	本教程会使用四条标准，物理设备必须全部满足才会被选中：
+	- 支持 Vulkan 1.3， 
+	- 拥有支持图形操作的队列族， 
+	- 支持全部必需的扩展（这里只需要 vk::KHRSwapchainExtensionName），并且
+	- 支持全部必需的特性.
+*/
+	std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName};
+	bool isDeviceSuitable(vk::raii::PhysicalDevice const & physicalDevice) // 举例子，假设我们只需要支持几何着色器的离散GPU设备
+	/*{ // 只是想让你了解设备选择流程可以怎样设计。
+		auto deviceProperties = physicalDevice.getProperties();
+		auto deviceFeatures = physicalDevice.getFeatures();
+
+		if (deviceProperties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu && deviceFeatures.geometryShader) {
+			return true;
+		}
+
+		return false;
+	}*/
+	{
+		// 检查物理设备是否支持 Vulkan 1.3 API 版本，看物理设备属性中的 apiVersion
+		bool supportsVulkan1_3 = physicalDevice.getProperties().apiVersion >= vk::ApiVersion13;
+
+		// 检查是否有队列族支持图形操作。（几乎所有的Vulkan操作都需要队列族！有的显卡只有传输队列族没有图形队列族）
+		auto queueFamilies    = physicalDevice.getQueueFamilyProperties();
+		bool supportsGraphics = std::ranges::any_of( queueFamilies, []( auto const & qfp ) { return !!( qfp.queueFlags & vk::QueueFlagBits::eGraphics ); } );
+
+		// 检查所有必需的物理设备扩展是否可用，目前只需要vk::KHRSwapchainExtensionName
+		auto availableDeviceExtensions = physicalDevice.enumerateDeviceExtensionProperties();
+		bool supportsAllRequiredExtensions =
+			std::ranges::all_of( requiredDeviceExtension,
+								[&availableDeviceExtensions]( auto const & requiredDeviceExtension )
+								{
+								return std::ranges::any_of( availableDeviceExtensions,
+															[requiredDeviceExtension]( auto const & availableDeviceExtension )
+															{ return strcmp( availableDeviceExtension.extensionName, requiredDeviceExtension ) == 0; } );
+								} );
+
+		// 检查物理设备是否支持必需的特性（着色器绘制参数、动态渲染和扩展动态状态）
+		auto features                 = physicalDevice.template getFeatures2<vk::PhysicalDeviceFeatures2,
+																			vk::PhysicalDeviceVulkan11Features,
+																			vk::PhysicalDeviceVulkan13Features,
+																			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+		bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters &&
+										features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
+										features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
+
+		// 物理设备满足全部标准时返回 true
+		return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
+		}
+
+		void pickPhysicalDevice()
+		{
+		std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
+		auto const devIter = std::ranges::find_if( physicalDevices, [&]( auto const & physicalDevice ) { return isDeviceSuitable( physicalDevice ); } );
+		if ( devIter == physicalDevices.end() )
+		{
+			throw std::runtime_error( "failed to find a suitable GPU!" );
+		}
+		physicalDevice = *devIter;
+	}
+
+	// 只是想让你了解设备选择流程可以怎样设计。
+	void pickPhysicalDevice1() // 选择物理设备示例
+	{
+		auto physicalDevices = vk::raii::PhysicalDevices( instance );
+		if (physicalDevices.empty())
+		{
+			throw std::runtime_error( "failed to find GPUs with Vulkan support!" );
+		}
+
+		// 用有序 map 自动按分数递增的顺序排列候选设备
+		std::multimap<int, vk::raii::PhysicalDevice> candidates;
+
+		for (const auto& pd : physicalDevices)
+		{
+			auto deviceProperties = pd.getProperties();
+			auto deviceFeatures = pd.getFeatures();
+			uint32_t score = 0;
+
+			// 独立显卡有明显的性能优势
+			if (deviceProperties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
+				score += 1000;
+			}
+
+			// 纹理的最大可能尺寸影响画面质量
+			score += deviceProperties.limits.maxImageDimension2D;
+
+			// 没有几何着色器，应用就无法工作
+			if (!deviceFeatures.geometryShader)
+			{
+			continue;
+			}
+			candidates.insert(std::make_pair(score, pd));
+		}
+
+		// 检查最好的候选设备是否至少可用
+		if (!candidates.empty() && candidates.rbegin()->first > 0)
+		{
+			physicalDevice = candidates.rbegin()->second;
+		}
+		else
+		{
+			throw std::runtime_error("failed to find a suitable GPU!");
+		}
+	}
+
+
+// 你是什么AI 
+// 我是一个由OpenAI开发的人工智能语言模型，旨在理解和生成自然语言文本。我可以帮助回答问题、提供信息、生成文本内容以及协助编程等任务。
+// 给我讲个故事
+// 当然可以！这是一个关于勇气和友谊的故事：
+// 从前，在一个宁静的小村庄里，住着一只名叫莉
+// 莉的小兔子。莉莉非常喜欢冒险，但她总是一个人行动，因为其他动物都觉得太危险了。一天，莉莉听说森林深处有一颗神奇的宝石，能够实现任何愿望。她决定去寻找这颗宝石。
+// 在旅途中，莉莉遇到了一只受伤的小狐狸。小狐狸告诉莉莉，它迷路了，找不到回家的路。莉莉决定帮助小狐狸，于是他们一起踏上了寻找宝石的旅程。经过许多挑战和困难，他们互相支持，逐渐建立了深厚的友谊。
+// 最终，他们找到了那颗神奇的宝石。小狐狸许下了一个愿望，希望莉莉能够永远快乐和安全。莉莉感动得流下了眼泪，她意识到，真正的宝藏不是宝石，而是他们之间的友谊和勇气。
+
 
 	void mainLoop()
 	{
