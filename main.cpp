@@ -1,4 +1,7 @@
-#include <algorithm>
+#include <algorithm> // Necessary for std::clamp
+#include <cassert> // Necessary for uint32_t
+#include <limits> // Necessary for std::numeric_limits
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -65,6 +68,7 @@ class HelloTriangleApplication
 		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
+		createSwapChain();
 	}
 
 	void createSurface()
@@ -206,6 +210,12 @@ class HelloTriangleApplication
 	// 创建逻辑设备用于和物理设备对接
 	vk::raii::Device device = nullptr; // 保存逻辑设备句柄。
 	vk::raii::Queue graphicsQueue = nullptr; // 保存图形队列句柄。设备销毁时，设备队列会被隐式清理，因此 cleanup 中无需做任何事。
+	vk::raii::SwapchainKHR swapChain = nullptr; // 来保存 vk::SwapchainKHR 对象及其图像
+	// 把为交换链图像选定的格式和范围存到成员变量里，后面的章节会用到。
+	std::vector<vk::Image> swapChainImages;
+	vk::SurfaceFormatKHR swapChainSurfaceFormat;
+	vk::Extent2D swapChainExtent;
+
 	void createLogicalDevice()
 	{
 		// 指定要创建的队列族和队列数量。这里我们只需要一个图形队列。
@@ -264,6 +274,80 @@ class HelloTriangleApplication
 		// 用于保存图形队列的句柄的类
 		graphicsQueue = vk::raii::Queue(device, queueIndex, 0); // 可以用 vk::raii::Queue 构造函数取得某个队列族的队列句柄。参数是逻辑设备、队列族索引和队列索引。由于我们只从这个族里创建一个队列，队列索引直接用 0
 
+	}
+
+	uint32_t chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities)
+	{
+		auto minImageCount = std::max(3u, surfaceCapabilities.minImageCount); // 交换链图像数量至少为3，保证有足够的图像用于渲染和显示。minImageCount是表面支持的最小图像数量，通常为2或3。我们选择3是为了避免在渲染时等待图像可用，从而提高帧率和流畅度。
+		if ((0 < surfaceCapabilities.maxImageCount) && (surfaceCapabilities.maxImageCount < minImageCount))
+		{
+			minImageCount = surfaceCapabilities.maxImageCount;
+		}
+		return minImageCount;
+	}
+
+	vk::SurfaceFormatKHR chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats) // 选择交换链表面格式
+	{
+		const auto formatIt = std::ranges::find_if( // 遍历列表，优先选择 vk::Format::eB8G8R8A8Srgb 和 vk::ColorSpaceKHR::eSrgbNonlinear 的组合，找不到就按照好坏排序
+			availableFormats,
+			[](auto const &format) { return format.format == vk::Format::eB8G8R8A8Srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear; }); // SRGB颜色空间是最常用的颜色空间，几乎所有的显示器都使用它。SRGB格式的图像在渲染时会自动进行伽马校正，保证颜色显示正确。B8G8R8A8格式是最常用的32位颜色格式，支持透明度通道。
+		return formatIt != availableFormats.end() ? *formatIt : availableFormats[0];
+	}
+
+	vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes) // 关键词：eImmediate（立即传输到屏幕，会撕裂） eFifo（最广泛，每帧取走一张，队列满了要等待。显示器刷新那一刻成为垂直空白） eFifoRelaxed（提交地晚，垂直空白为空，马上提交） eMailbox（队列满了就替换第一个）
+	{
+		assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
+		return std::ranges::any_of(availablePresentModes,
+		                           [](vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; }) ?
+			       vk::PresentModeKHR::eMailbox :
+			       vk::PresentModeKHR::eFifo;
+	}
+
+	vk::Extent2D chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities) // 选择交换链图像的分辨率。要适配GLFW窗口的大小，必须使用 glfwGetFramebufferSize() 获取实际的像素尺寸，而不是 glfwGetWindowSize() 获取逻辑尺寸。因为在高DPI屏幕上，逻辑尺寸和像素尺寸可能不一致。
+	{
+		// currentExtent 只有在上文所述的“未定义”特殊取值下才表示由窗口管理器
+		// 让我们自行选择范围；取其他任何值都说明表面已规定了固定范围，
+		// 我们必须原样使用。
+		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
+		{
+			return capabilities.currentExtent;
+		}
+		int width, height;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		return {
+			std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+			std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+		};
+	}
+
+	void createSwapChain() // 准备完成后创建交换链
+	{
+		vk::SurfaceCapabilitiesKHR surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(*surface); // 该函数在确定支持的能力时，会考虑传入的 vk::SurfaceKHR 窗口表面。所有支持性查询函数都把窗口表面作为第一个参数，因为它是交换链的核心组成部分。
+		swapChainExtent                                = chooseSwapExtent(surfaceCapabilities);
+		uint32_t minImageCount                         = chooseSwapMinImageCount(surfaceCapabilities); // 选择交换链图像数量
+
+		std::vector<vk::SurfaceFormatKHR> availableFormats = physicalDevice.getSurfaceFormatsKHR(*surface); // 查询支持的表面格式
+		swapChainSurfaceFormat                             = chooseSwapSurfaceFormat(availableFormats);
+		std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(*surface); // 查询支持的呈现模式
+		// 支持至少一个足够，然后才查询交换链支持情况
+
+
+		vk::SwapchainCreateInfoKHR swapChainCreateInfo{ .surface = *surface,
+														.minImageCount = minImageCount,
+														.imageFormat = swapChainSurfaceFormat.format,
+														.imageColorSpace = swapChainSurfaceFormat.colorSpace,
+														.imageExtent = swapChainExtent, // （可以注释掉看看验证层会发生什么）交换链图像的分辨率，必须在表面支持的范围内。这里我们选择和窗口大小一致的分辨率。
+														.imageArrayLayers = 1, // 交换链图像的层数，除非做立体渲染，否则总是1
+														.imageUsage = vk::ImageUsageFlagBits::eColorAttachment, // 交换链图像的用途，这里是作为颜色附件使用
+														.imageSharingMode = vk::SharingMode::eExclusive, // 交换链图像的共享模式，这里是独占模式，意味着图像只能被一个队列族使用，如果要在多个队列族之间共享，需要使用 vk::SharingMode::eConcurrent
+														.preTransform = surfaceCapabilities.currentTransform, // 交换链图像的预变换方式，这里是当前表面变换方式，例如旋转 90° 、水平翻转等
+														.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque, // 交换链图像的透明度处理方式，这里是完全不透明
+														.presentMode = chooseSwapPresentMode(availablePresentModes),
+														.clipped = true}; // 效果不言而喻XD。反正我是不知道是什么意思。文档说是窗口裁剪，可以节约性能。
+
+		swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo); // 创建交换链，如此简单
+		swapChainImages = swapChain.getImages(); // 取出其中 vk::Image 对象的句柄
 	}
 
 	void mainLoop()
