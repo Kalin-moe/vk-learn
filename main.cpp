@@ -50,6 +50,7 @@ class HelloTriangleApplication
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr; // 调试信使，可以有多个
 	vk::raii::SurfaceKHR surface = nullptr; // 窗口表面
 	vk::raii::PhysicalDevice physicalDevice = nullptr; // 选中的物理设备
+	std::vector<vk::raii::ImageView> swapChainImageViews; // 用于保存交换链图像视图的句柄
 
 	void initWindow() // note: wayland下必须绘制东西才会显示窗口
 	{
@@ -69,6 +70,7 @@ class HelloTriangleApplication
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createSwapChain();
+		createImageViews();
 	}
 
 	void createSurface()
@@ -348,6 +350,26 @@ class HelloTriangleApplication
 
 		swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo); // 创建交换链，如此简单
 		swapChainImages = swapChain.getImages(); // 取出其中 vk::Image 对象的句柄
+	}
+
+	void createImageViews()
+	{
+		assert(swapChainImageViews.empty());
+
+		vk::ImageViewCreateInfo imageViewCreateInfo{ .viewType         = vk::ImageViewType::e2D, // 你想要几维的渲染？
+													.format           = swapChainSurfaceFormat.format, // 交换链图像的格式必须和交换链本身的格式一致
+													.components       = { vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity }, // 颜色通道映射，默认不变。不写也行，vk::ComponentMapping 的默认构造函数就是 eIdentity
+													.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 } }; // 描述图像的用途，以及应访问图像的哪一部分。我们的图像将用作颜色目标，不带任何 mipmap 层级，也不带多个层。
+
+													//imageViewCreateInfo.components = {  // 同等于这个
+    												//vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity};
+													
+													// 遍历交换链循环
+		for (auto &image : swapChainImages)
+		{
+			imageViewCreateInfo.image = image; // 关联交换链图像
+			swapChainImageViews.emplace_back(device, imageViewCreateInfo); // 创建图像视图，并保存句柄
+		}
 	}
 
 	void mainLoop()
