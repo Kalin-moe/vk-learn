@@ -50,7 +50,7 @@ class HelloTriangleApplication
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr; // 调试信使，可以有多个
 	vk::raii::SurfaceKHR surface = nullptr; // 窗口表面
 	vk::raii::PhysicalDevice physicalDevice = nullptr; // 选中的物理设备
-	std::vector<vk::raii::ImageView> swapChainImageViews; // 用于保存交换链图像视图的句柄
+
 
 	void initWindow() // note: wayland下必须绘制东西才会显示窗口
 	{
@@ -209,10 +209,13 @@ class HelloTriangleApplication
 // 在旅途中，莉莉遇到了一只受伤的小狐狸。小狐狸告诉莉莉，它迷路了，找不到回家的路。莉莉决定帮助小狐狸，于是他们一起踏上了寻找宝石的旅程。经过许多挑战和困难，他们互相支持，逐渐建立了深厚的友谊。
 // 最终，他们找到了那颗神奇的宝石。小狐狸许下了一个愿望，希望莉莉能够永远快乐和安全。莉莉感动得流下了眼泪，她意识到，真正的宝藏不是宝石，而是他们之间的友谊和勇气。
 
+// 另外你那句 // 你是什么AI 的注释里有个事实错误：那不是我，我是 GitHub Copilot（DeepSeek V4.1 Flash），那段自述可以删掉了。
+
 	// 创建逻辑设备用于和物理设备对接
 	vk::raii::Device device = nullptr; // 保存逻辑设备句柄。
 	vk::raii::Queue graphicsQueue = nullptr; // 保存图形队列句柄。设备销毁时，设备队列会被隐式清理，因此 cleanup 中无需做任何事。
 	vk::raii::SwapchainKHR swapChain = nullptr; // 来保存 vk::SwapchainKHR 对象及其图像
+	std::vector<vk::raii::ImageView> swapChainImageViews; // 用于保存交换链图像视图的句柄（声明在 device 之后，保证先于 device 销毁）
 	// 把为交换链图像选定的格式和范围存到成员变量里，后面的章节会用到。
 	std::vector<vk::Image> swapChainImages;
 	vk::SurfaceFormatKHR swapChainSurfaceFormat;
