@@ -71,6 +71,7 @@ class HelloTriangleApplication
 		createLogicalDevice();
 		createSwapChain();
 		createImageViews();
+		createGraphicsPipeline();
 	}
 
 	void createSurface()
@@ -373,6 +374,11 @@ class HelloTriangleApplication
 			imageViewCreateInfo.image = image; // 关联交换链图像
 			swapChainImageViews.emplace_back(device, imageViewCreateInfo); // 创建图像视图，并保存句柄
 		}
+	}
+
+	void createGraphicsPipeline()
+	{
+		// 休息一下，马上回来。参见03_Drawing_a_triangle/02_Graphics_pipeline_basics/00_Introduction
 	}
 
 	void mainLoop()
