@@ -227,6 +227,8 @@ class HelloTriangleApplication
 	// 即使当前不使用任何这类数据，也仍然必须创建一个空的管线布局。
 	// （同样声明在 device 之后，保证先于 device 销毁）
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
+	// 图形管线
+	vk::raii::Pipeline graphicsPipeline = nullptr;
 
 	void createLogicalDevice()
 	{
@@ -578,6 +580,27 @@ class HelloTriangleApplication
 		vk::PipelineLayoutCreateInfo pipelineLayoutInfo{ .setLayoutCount = 0, .pushConstantRangeCount = 0 };
 
 		pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
+
+		vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipelineCreateInfoChain = {
+			{.stageCount          = 2, // (这是在干什么)
+			.pStages             = shaderStages,
+			// 首先引用 vk::PipelineShaderStageCreateInfo 结构体数组。(我怎么一点都看不懂)
+			.pVertexInputState   = &vertexInputInfo,
+			.pInputAssemblyState = &inputAssembly,
+			.pViewportState      = &viewportState,
+			.pRasterizationState = &rasterizer,
+			.pMultisampleState   = &multisampling,
+			.pColorBlendState    = &colorBlending,
+			.pDynamicState       = &dynamicState,
+			// 然后引用描述固定功能阶段的所有结构体。
+			.layout              = pipelineLayout,
+			.renderPass          = nullptr}, // 动态渲染：不使用 renderPass
+			// StructureChain 的第二个元素：vk::PipelineRenderingCreateInfo，
+			// 由它通过 pNext 告诉管线颜色附件的格式。
+			{.colorAttachmentCount = 1, .pColorAttachmentFormats = &swapChainSurfaceFormat.format}};
+
+		// 创建图形管线（pipelineCache 传 nullptr 表示不缓存）
+		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
 	}
 
 	void mainLoop()
