@@ -4,11 +4,13 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream> // 读取 shader 文件
 #include <iostream>
 // #include <memory>
 #include <stdexcept>
 #include <string>
 #include <map>
+#include <vector>
 
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES) // 取决于是否启用了CPP20模块
 #	include <vulkan/vulkan_raii.hpp>
@@ -376,9 +378,64 @@ class HelloTriangleApplication
 		}
 	}
 
+	// 一次性读取整个文件，返回由 std::vector 管理的字节数组
+	static std::vector<char> readFile(const std::string &filename)
+	{
+		// ate: 打开后立刻定位到文件末尾；binary: 按二进制读取，避免文本转换
+		std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+		if (!file.is_open())
+		{
+			throw std::runtime_error("failed to open file: " + filename);
+		}
+
+		// 因为已经定位到文件末尾，当前位置就是文件大小，可以直接分配缓冲区
+		std::vector<char> buffer(static_cast<size_t>(file.tellg()));
+
+		// 回到开头，一次性读完
+		file.seekg(0, std::ios::beg);
+		file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+
+		// 关闭文件并返回字节
+		file.close();
+
+		return buffer;
+	}
+
+	// 把 SPIR-V 字节码包装成 vk::raii::ShaderModule
+	[[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char> &code) const
+	{
+		// codeSize 以字节计，而 pCode 要求 uint32_t 指针，所以需要 reinterpret_cast。
+		// std::vector 的默认分配器已满足 uint32_t 的对齐要求，可以放心转换。
+		vk::ShaderModuleCreateInfo createInfo{ .codeSize = code.size() * sizeof(char),
+		                                       .pCode    = reinterpret_cast<const uint32_t *>(code.data()) };
+
+		vk::raii::ShaderModule shaderModule{ device, createInfo };
+
+		// 创建完就可以释放字节码缓冲区了，着色器模块只是对它的薄封装
+		return shaderModule;
+	}
+
 	void createGraphicsPipeline()
 	{
-		// 休息一下，马上回来。参见03_Drawing_a_triangle/02_Graphics_pipeline_basics/00_Introduction
+		// 先加载字节码，并打印大小以确认读取无误（可与文件实际字节数对照）
+		std::vector<char> shaderCode = readFile("shaders/slang.spv");
+		std::cout << "shader code size: " << shaderCode.size() << " bytes" << std::endl;
+
+		// 着色器模块只是字节码的薄封装，真正的编译链接发生在管线创建时，
+		// 所以这里用局部变量，管线创建完成后即可销毁。
+		vk::raii::ShaderModule shaderModule = createShaderModule(shaderCode);
+
+		// 把着色器绑定到具体的管线阶段，pName 指定入口函数名（一个模块可以有多个入口点）
+		vk::PipelineShaderStageCreateInfo vertShaderStageInfo{ .stage  = vk::ShaderStageFlagBits::eVertex,
+		                                                       .module = shaderModule,
+		                                                       .pName  = "vertMain" };
+		vk::PipelineShaderStageCreateInfo fragShaderStageInfo{ .stage  = vk::ShaderStageFlagBits::eFragment,
+		                                                       .module = shaderModule,
+		                                                       .pName  = "fragMain" };
+
+		// 之后创建管线时会用到
+		vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 	}
 
 	void mainLoop()
