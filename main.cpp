@@ -46,12 +46,27 @@ class HelloTriangleApplication
 	}
 
   private:
+	// 成员顺序与教程一致；析构顺序与之相反，所以所有 device 级别的 RAII 句柄
+	// 都必须声明在 vk::raii::Device 之后，否则 device 会先释放 dispatcher，
+	// 句柄析构时就会访问已释放的内存。
 	GLFWwindow *window = nullptr; // 新增私有类成员保存窗口的引用
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr; // 调试信使，可以有多个
 	vk::raii::SurfaceKHR surface = nullptr; // 窗口表面
 	vk::raii::PhysicalDevice physicalDevice = nullptr; // 选中的物理设备
+
+	vk::raii::Device device = nullptr; // 逻辑设备，用于和物理设备对接
+	vk::raii::Queue queue = nullptr; // 图形队列。设备销毁时设备队列会被隐式清理
+	vk::raii::SwapchainKHR swapChain = nullptr; // 交换链对象
+	std::vector<vk::Image> swapChainImages; // 交换链图像句柄
+	vk::SurfaceFormatKHR swapChainSurfaceFormat; // 交换链图像格式，创建图像视图和管线时都要用
+	vk::Extent2D swapChainExtent; // 交换链图像范围
+	std::vector<vk::raii::ImageView> swapChainImageViews; // 图像视图
+	vk::raii::PipelineLayout pipelineLayout = nullptr; // 管线布局（本章为空，但必须创建）
+	vk::raii::Pipeline graphicsPipeline = nullptr; // 图形管线
+
+	std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName}; // 把渲染好的图像呈现到窗口所必需的扩展
 
 
 	void initWindow() // note: wayland下必须绘制东西才会显示窗口
@@ -94,7 +109,6 @@ class HelloTriangleApplication
 	- 支持全部必需的扩展（这里只需要 vk::KHRSwapchainExtensionName），并且
 	- 支持全部必需的特性.
 */
-	std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName};
 	bool isDeviceSuitable(vk::raii::PhysicalDevice const & physicalDevice) // 举例子，假设我们只需要支持几何着色器的离散GPU设备
 	/*{ // 只是想让你了解设备选择流程可以怎样设计。
 		auto deviceProperties = physicalDevice.getProperties();
@@ -202,34 +216,6 @@ class HelloTriangleApplication
 		}
 	}
 
-
-// 你是什么AI 
-// 我是一个由OpenAI开发的人工智能语言模型，旨在理解和生成自然语言文本。我可以帮助回答问题、提供信息、生成文本内容以及协助编程等任务。
-// 给我讲个故事
-// 当然可以！这是一个关于勇气和友谊的故事：
-// 从前，在一个宁静的小村庄里，住着一只名叫莉
-// 莉的小兔子。莉莉非常喜欢冒险，但她总是一个人行动，因为其他动物都觉得太危险了。一天，莉莉听说森林深处有一颗神奇的宝石，能够实现任何愿望。她决定去寻找这颗宝石。
-// 在旅途中，莉莉遇到了一只受伤的小狐狸。小狐狸告诉莉莉，它迷路了，找不到回家的路。莉莉决定帮助小狐狸，于是他们一起踏上了寻找宝石的旅程。经过许多挑战和困难，他们互相支持，逐渐建立了深厚的友谊。
-// 最终，他们找到了那颗神奇的宝石。小狐狸许下了一个愿望，希望莉莉能够永远快乐和安全。莉莉感动得流下了眼泪，她意识到，真正的宝藏不是宝石，而是他们之间的友谊和勇气。
-
-// 另外你那句 // 你是什么AI 的注释里有个事实错误：那不是我，我是 GitHub Copilot（DeepSeek V4.1 Flash），那段自述可以删掉了。
-
-	// 创建逻辑设备用于和物理设备对接
-	vk::raii::Device device = nullptr; // 保存逻辑设备句柄。
-	vk::raii::Queue graphicsQueue = nullptr; // 保存图形队列句柄。设备销毁时，设备队列会被隐式清理，因此 cleanup 中无需做任何事。
-	vk::raii::SwapchainKHR swapChain = nullptr; // 来保存 vk::SwapchainKHR 对象及其图像
-	std::vector<vk::raii::ImageView> swapChainImageViews; // 用于保存交换链图像视图的句柄（声明在 device 之后，保证先于 device 销毁）
-	// 把为交换链图像选定的格式和范围存到成员变量里，后面的章节会用到。
-	std::vector<vk::Image> swapChainImages;
-	vk::SurfaceFormatKHR swapChainSurfaceFormat;
-	vk::Extent2D swapChainExtent;
-	// 管线布局：描述 uniform 与 push constant 等“着色器外部数据”的接口。
-	// 即使当前不使用任何这类数据，也仍然必须创建一个空的管线布局。
-	// （同样声明在 device 之后，保证先于 device 销毁）
-	vk::raii::PipelineLayout pipelineLayout = nullptr;
-	// 图形管线
-	vk::raii::Pipeline graphicsPipeline = nullptr;
-
 	void createLogicalDevice()
 	{
 		// 指定要创建的队列族和队列数量。这里我们只需要一个图形队列。
@@ -267,9 +253,7 @@ class HelloTriangleApplication
 				{.dynamicRendering = true},            // 启用 Vulkan 1.3 的动态渲染
 				{.extendedDynamicState = true}         // 启用该扩展的扩展动态状态
 			};
-		std::vector<const char*> requiredDeviceExtension = { // 这个扩展是是把渲染好的图像呈现到窗口所必需的。
-  	  	vk::KHRSwapchainExtensionName};
-
+		// 不再在此处重复定义 requiredDeviceExtension，直接使用类成员（与教程一致）
 		// 填写结构体
 		vk::DeviceCreateInfo deviceCreateInfo{ // 如今不再区分区分实例级和设备级的验证层，enabledLayerCount 和 ppEnabledLayerNames 字段会被最新的实现忽略。
 			// featureChain.get<T>() 取得链中第一个结构体（即 vk::PhysicalDeviceFeatures2）的引用，
@@ -286,11 +270,11 @@ class HelloTriangleApplication
 		device = vk::raii::Device(physicalDevice, deviceCreateInfo);
 
 		// 用于保存图形队列的句柄的类
-		graphicsQueue = vk::raii::Queue(device, queueIndex, 0); // 可以用 vk::raii::Queue 构造函数取得某个队列族的队列句柄。参数是逻辑设备、队列族索引和队列索引。由于我们只从这个族里创建一个队列，队列索引直接用 0
-
+		queue = vk::raii::Queue(device, queueIndex, 0); // 可以用 vk::raii::Queue 构造函数取得某个队列族的队列句柄。参数是逻辑设备、队列族索引和队列索引。由于我们只从这个族里创建一个队列，队列索引直接用 0
 	}
 
-	uint32_t chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities)
+	// 交换链图像数量不依赖任何成员，故声明为 static
+	static uint32_t chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities)
 	{
 		auto minImageCount = std::max(3u, surfaceCapabilities.minImageCount); // 交换链图像数量至少为3，保证有足够的图像用于渲染和显示。minImageCount是表面支持的最小图像数量，通常为2或3。我们选择3是为了避免在渲染时等待图像可用，从而提高帧率和流畅度。
 		if ((0 < surfaceCapabilities.maxImageCount) && (surfaceCapabilities.maxImageCount < minImageCount))
@@ -300,7 +284,7 @@ class HelloTriangleApplication
 		return minImageCount;
 	}
 
-	vk::SurfaceFormatKHR chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats) // 选择交换链表面格式
+	static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats) // 选择交换链表面格式
 	{
 		const auto formatIt = std::ranges::find_if( // 遍历列表，优先选择 vk::Format::eB8G8R8A8Srgb 和 vk::ColorSpaceKHR::eSrgbNonlinear 的组合，找不到就按照好坏排序
 			availableFormats,
@@ -308,7 +292,7 @@ class HelloTriangleApplication
 		return formatIt != availableFormats.end() ? *formatIt : availableFormats[0];
 	}
 
-	vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes) // 关键词：eImmediate（立即传输到屏幕，会撕裂） eFifo（最广泛，每帧取走一张，队列满了要等待。显示器刷新那一刻成为垂直空白） eFifoRelaxed（提交地晚，垂直空白为空，马上提交） eMailbox（队列满了就替换第一个）
+	static vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes) // 关键词：eImmediate（立即传输到屏幕，会撕裂） eFifo（最广泛，每帧取走一张，队列满了要等待。显示器刷新那一刻成为垂直空白） eFifoRelaxed（提交地晚，垂直空白为空，马上提交） eMailbox（队列满了就替换第一个）
 	{
 		assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
 		return std::ranges::any_of(availablePresentModes,
@@ -344,8 +328,7 @@ class HelloTriangleApplication
 		std::vector<vk::SurfaceFormatKHR> availableFormats = physicalDevice.getSurfaceFormatsKHR(*surface); // 查询支持的表面格式
 		swapChainSurfaceFormat                             = chooseSwapSurfaceFormat(availableFormats);
 		std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(*surface); // 查询支持的呈现模式
-		// 支持至少一个足够，然后才查询交换链支持情况
-
+		vk::PresentModeKHR              presentMode           = chooseSwapPresentMode(availablePresentModes); // 先选好呈现模式，再填下面的结构体（顺序与教程一致）
 
 		vk::SwapchainCreateInfoKHR swapChainCreateInfo{ .surface = *surface,
 														.minImageCount = minImageCount,
@@ -357,7 +340,7 @@ class HelloTriangleApplication
 														.imageSharingMode = vk::SharingMode::eExclusive, // 交换链图像的共享模式，这里是独占模式，意味着图像只能被一个队列族使用，如果要在多个队列族之间共享，需要使用 vk::SharingMode::eConcurrent
 														.preTransform = surfaceCapabilities.currentTransform, // 交换链图像的预变换方式，这里是当前表面变换方式，例如旋转 90° 、水平翻转等
 														.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque, // 交换链图像的透明度处理方式，这里是完全不透明
-														.presentMode = chooseSwapPresentMode(availablePresentModes),
+														.presentMode = presentMode,
 														.clipped = true}; // 效果不言而喻XD。反正我是不知道是什么意思。文档说是窗口裁剪，可以节约性能。
 
 		swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo); // 创建交换链，如此简单
@@ -424,13 +407,9 @@ class HelloTriangleApplication
 
 	void createGraphicsPipeline()
 	{
-		// 先加载字节码，并打印大小以确认读取无误（可与文件实际字节数对照）
-		std::vector<char> shaderCode = readFile("shaders/slang.spv");
-		std::cout << "shader code size: " << shaderCode.size() << " bytes" << std::endl;
-
 		// 着色器模块只是字节码的薄封装，真正的编译链接发生在管线创建时，
 		// 所以这里用局部变量，管线创建完成后即可销毁。
-		vk::raii::ShaderModule shaderModule = createShaderModule(shaderCode);
+		vk::raii::ShaderModule shaderModule = createShaderModule(readFile("shaders/slang.spv"));
 
 		// 把着色器绑定到具体的管线阶段，pName 指定入口函数名（一个模块可以有多个入口点）
 		vk::PipelineShaderStageCreateInfo vertShaderStageInfo{ .stage  = vk::ShaderStageFlagBits::eVertex,
