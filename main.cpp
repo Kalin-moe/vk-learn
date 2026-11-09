@@ -69,6 +69,13 @@ class HelloTriangleApplication
 
 	std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName}; // 把渲染好的图像呈现到窗口所必需的扩展
 
+    // 保存这两个信号量对象和这个栅栏对象。一个表示渲染已完成，一个表示栅栏确保同一时间只渲染一帧
+	vk::raii::Semaphore presentCompleteSemaphore = nullptr;
+	// 「渲染完成」信号量必须每个交换链图像一个：共用一个时，present 对它的等待可能还没执行完，
+	// 下一帧又 signal 它 → VUID-vkQueueSubmit-pSignalSemaphores-00067（详见 drawFrame）
+	std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
+	vk::raii::Fence     drawFence                = nullptr;
+
 
 	void initWindow() // note: wayland下必须绘制东西才会显示窗口
 	{
@@ -92,6 +99,7 @@ class HelloTriangleApplication
 		createGraphicsPipeline();
 		createCommandPool();
 		createCommandBuffer();
+		createSyncObjects();
 	}
 
 	void createSurface()
@@ -700,12 +708,27 @@ class HelloTriangleApplication
 		commandBuffer.end();
 	}
 
+	void createSyncObjects()
+	{
+		// 这个版本的Vulkan API暂时还用不到
+		presentCompleteSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+		// 每个交换链图像各一个，所以必须在 createSwapChain() 之后调用
+		renderFinishedSemaphores.reserve(swapChainImages.size());
+		for (size_t i = 0; i < swapChainImages.size(); ++i)
+			renderFinishedSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());
+		drawFence                = vk::raii::Fence(device, {.flags = vk::FenceCreateFlagBits::eSignaled});
+
+	}
+
 	void mainLoop()
 	{
 		while (!glfwWindowShouldClose(window)) // 检查窗口是否应该关闭
 		{
 			glfwPollEvents();
+			drawFrame();
 		}
+
+		device.waitIdle();
 	}
 
 	void cleanup()
@@ -812,6 +835,49 @@ class HelloTriangleApplication
 		}
 
 		return vk::False; // 返回 vk::True 会中止触发该消息的 Vulkan 调用，一般只在测试验证层本身时使用
+	}
+
+	void drawFrame()
+	{
+		// 等待上一帧，等命令缓冲区和信号量可用，使用device.waitForFences。超时UINT64_MAX跳过。vk::True 表示要等待所有栅栏。
+		auto fenceResult = device.waitForFences(*drawFence, vk::True, UINT64_MAX);
+			if (fenceResult != vk::Result::eSuccess)
+			{
+				throw std::runtime_error("failed to wait for fence!");
+			}
+			device.resetFences(*drawFence);
+		
+		// 等待完成后在交换链获取一张图像
+		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphore, nullptr);
+
+		// 录制命令缓冲区
+		recordCommandBuffer(imageIndex);
+
+		// 队列提交与同步，使用结构体。
+		vk::PipelineStageFlags waitDestinationStageMask( vk::PipelineStageFlagBits::eColorAttachmentOutput );
+		const vk::SubmitInfo   submitInfo{.waitSemaphoreCount   = 1,
+										.pWaitSemaphores      = &*presentCompleteSemaphore,
+										.pWaitDstStageMask    = &waitDestinationStageMask,
+										.commandBufferCount   = 1,
+										.pCommandBuffers      = &*commandBuffer,
+										.signalSemaphoreCount = 1,
+										// 只 signal 与这张图像配对的那一个，而不是所有图像共用同一个
+										.pSignalSemaphores    = &*renderFinishedSemaphores[imageIndex]};
+		
+		// 提交手头这一个命令缓冲区
+		queue.submit(submitInfo, *drawFence);
+
+		// 把结果提交给交换链，让它最终出现在屏幕上，使用结构体配置
+		const vk::PresentInfoKHR presentInfoKHR{
+			.waitSemaphoreCount = 1,
+			.pWaitSemaphores    = &*renderFinishedSemaphores[imageIndex], // 同上，等这一张图像自己的信号量
+			.swapchainCount     = 1,
+			.pSwapchains        = &*swapChain,
+			.pImageIndices      = &imageIndex};
+		
+		// presentInfoKHR.pResults = nullptr; // 可选
+		
+		result = queue.presentKHR(presentInfoKHR);
 	}
 };
 
