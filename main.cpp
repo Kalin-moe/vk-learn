@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <map>
+#include <utility> // std::move
 #include <vector>
 
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES) // 取决于是否启用了CPP20模块
@@ -46,10 +47,7 @@ class HelloTriangleApplication
 	}
 
   private:
-	// 成员顺序与教程一致；析构顺序与之相反，所以所有 device 级别的 RAII 句柄
-	// 都必须声明在 vk::raii::Device 之后，否则 device 会先释放 dispatcher，
-	// 句柄析构时就会访问已释放的内存。
-	GLFWwindow *window = nullptr; // 新增私有类成员保存窗口的引用
+	GLFWwindow *window = nullptr; // 私有类成员保存窗口的引用
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr; // 调试信使，可以有多个
@@ -57,6 +55,7 @@ class HelloTriangleApplication
 	vk::raii::PhysicalDevice physicalDevice = nullptr; // 选中的物理设备
 
 	vk::raii::Device device = nullptr; // 逻辑设备，用于和物理设备对接
+	uint32_t queueIndex = ~0u; // 选中的队列族索引；创建命令池时还要用到，所以作为成员保存
 	vk::raii::Queue queue = nullptr; // 图形队列。设备销毁时设备队列会被隐式清理
 	vk::raii::SwapchainKHR swapChain = nullptr; // 交换链对象
 	std::vector<vk::Image> swapChainImages; // 交换链图像句柄
@@ -65,6 +64,8 @@ class HelloTriangleApplication
 	std::vector<vk::raii::ImageView> swapChainImageViews; // 图像视图
 	vk::raii::PipelineLayout pipelineLayout = nullptr; // 管线布局（本章为空，但必须创建）
 	vk::raii::Pipeline graphicsPipeline = nullptr; // 图形管线
+	vk::raii::CommandPool commandPool = nullptr; // 命令池
+	vk::raii::CommandBuffer commandBuffer = nullptr; // 从命令池分配的命令缓冲区
 
 	std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName}; // 把渲染好的图像呈现到窗口所必需的扩展
 
@@ -89,6 +90,8 @@ class HelloTriangleApplication
 		createSwapChain();
 		createImageViews();
 		createGraphicsPipeline();
+		createCommandPool();
+		createCommandBuffer();
 	}
 
 	void createSurface()
@@ -153,6 +156,7 @@ class HelloTriangleApplication
 																			vk::PhysicalDeviceVulkan13Features,
 																			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
 		bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters &&
+										features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
 										features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
 										features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
@@ -222,7 +226,7 @@ class HelloTriangleApplication
 		std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
 
 		// 找到第一个同时支持图形操作和向窗口表面呈现的队列族
-		uint32_t queueIndex = ~0u;
+		queueIndex = ~0u; // 成员变量，createCommandPool() 里还要用它指定队列族
 		for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++)
 		{
 			if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
@@ -248,10 +252,12 @@ class HelloTriangleApplication
 						vk::PhysicalDeviceVulkan13Features,
 						vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
 			featureChain = {
-				{},                                    // vk::PhysicalDeviceFeatures2（暂时为空）
-				{.shaderDrawParameters = true},        // 启用 Vulkan 1.1 的着色器绘制参数
-				{.dynamicRendering = true},            // 启用 Vulkan 1.3 的动态渲染
-				{.extendedDynamicState = true}         // 启用该扩展的扩展动态状态
+				{},                                                        // vk::PhysicalDeviceFeatures2（暂时为空）
+				{.shaderDrawParameters = true},                            // 启用 Vulkan 1.1 的着色器绘制参数
+				// 注意指定初始化器必须按成员声明顺序书写：synchronization2 在 dynamicRendering 之前。
+				// synchronization2 是 vkCmdPipelineBarrier2 的前提，本命令缓冲区用它做图像布局转换。
+				{.synchronization2 = true, .dynamicRendering = true},      // 启用 Vulkan 1.3 的同步2 与动态渲染
+				{.extendedDynamicState = true}                             // 启用该扩展的扩展动态状态
 			};
 		// 不再在此处重复定义 requiredDeviceExtension，直接使用类成员（与教程一致）
 		// 填写结构体
@@ -580,6 +586,118 @@ class HelloTriangleApplication
 
 		// 创建图形管线（pipelineCache 传 nullptr 表示不缓存）
 		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
+	}
+
+	// 命令池：命令缓冲区从池中分配。用 eResetCommandBuffer 标志允许单独重置命令缓冲区。
+	// 命令缓冲区会把命令记录到队列族对应的队列上，所以命令池必须属于同一个队列族。
+	void createCommandPool()
+	{
+		vk::CommandPoolCreateInfo poolInfo{ .flags            = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+		                                    .queueFamilyIndex = queueIndex };
+		commandPool = vk::raii::CommandPool(device, poolInfo);
+	}
+
+	// 命令缓冲区：记录绘制命令，提交给队列执行。
+	// 这里只分配一个主级（ePrimary）命令缓冲区；CommandBuffers 是容器，
+	// 取出第一个后即可让容器销毁。
+	void createCommandBuffer()
+	{
+		vk::CommandBufferAllocateInfo allocInfo{ .commandPool        = commandPool,
+		                                         .level              = vk::CommandBufferLevel::ePrimary,
+		                                         .commandBufferCount = 1 };
+		commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
+	}
+
+	// 切换交换链图像的布局（例如 eUndefined -> eColorAttachmentOptimal）。
+	// 布局切换会改变图像在内存中的排布，必须用管线屏障让前后的读写阶段同步，
+	// 否则 GPU 可能在写入还没结束时就去读取。
+	void transition_image_layout(uint32_t                imageIndex,
+	                           vk::ImageLayout         oldLayout,
+	                           vk::ImageLayout         newLayout,
+	                           vk::AccessFlags2        srcAccessMask,
+	                           vk::AccessFlags2        dstAccessMask,
+	                           vk::PipelineStageFlags2 srcStageMask,
+	                           vk::PipelineStageFlags2 dstStageMask)
+	{
+		vk::ImageMemoryBarrier2 barrier = {
+										 .srcStageMask        = srcStageMask,
+		                                 .srcAccessMask       = srcAccessMask,
+		                                 .dstStageMask        = dstStageMask,
+		                                 .dstAccessMask       = dstAccessMask,
+		                                 .oldLayout           = oldLayout,
+		                                 .newLayout           = newLayout,
+		                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, // 不涉及队列族所有权转移
+		                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		                                 .image               = swapChainImages[imageIndex],
+		                                 .subresourceRange    = { .aspectMask     = vk::ImageAspectFlagBits::eColor,
+		                                                          .baseMipLevel   = 0,
+		                                                          .levelCount     = 1,
+		                                                          .baseArrayLayer = 0,
+		                                                          .layerCount     = 1 } };
+		vk::DependencyInfo dependencyInfo{ .dependencyFlags         = {},
+		                                   .imageMemoryBarrierCount = 1,
+		                                   .pImageMemoryBarriers    = &barrier };
+		commandBuffer.pipelineBarrier2(dependencyInfo);
+	}
+
+	// 把“这一帧要做什么”记录进命令缓冲区。真正的执行发生在提交给队列之后。
+	void recordCommandBuffer(uint32_t imageIndex)
+	{
+		// begin 会隐式重置上一次的记录内容；命令只能整体重录，不能追加。
+		commandBuffer.begin({});
+
+		// 渲染前：vk::ImageLayout::eUndefined -> vk::ImageLayout::eColorAttachmentOptimal
+		transition_image_layout(imageIndex,
+		                      vk::ImageLayout::eUndefined,
+		                      vk::ImageLayout::eColorAttachmentOptimal,
+		                      {},                                                 // srcAccessMask：无需等待之前的操作
+		                      vk::AccessFlagBits2::eColorAttachmentWrite,          // dstAccessMask
+		                      vk::PipelineStageFlagBits2::eColorAttachmentOutput,  // srcStageMask
+		                      vk::PipelineStageFlagBits2::eColorAttachmentOutput); // dstStageMask
+
+		// 颜色附件：清屏后作为渲染目标，渲染结果保存下来供呈现使用
+		vk::ClearValue              clearColor     = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+		vk::RenderingAttachmentInfo attachmentInfo{ .imageView   = swapChainImageViews[imageIndex],
+		                                            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+		                                            .loadOp      = vk::AttachmentLoadOp::eClear,
+		                                            .storeOp     = vk::AttachmentStoreOp::eStore,
+		                                            .clearValue  = clearColor };
+
+		vk::RenderingInfo renderingInfo{ .renderArea           = { .offset = {0, 0}, .extent = swapChainExtent },
+		                                 .layerCount           = 1,
+		                                 .colorAttachmentCount = 1,
+		                                 .pColorAttachments    = &attachmentInfo };
+
+		// 动态渲染：不需要 render pass 和帧缓冲，直接指定附件开始渲染
+		commandBuffer.beginRendering(renderingInfo);
+
+		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
+
+		// 视口和裁剪矩形在创建管线时被声明为动态状态，必须在这里显式设置
+		commandBuffer.setViewport(0, vk::Viewport{ .x        = 0.0f,
+		                                           .y        = 0.0f,
+		                                           .width    = static_cast<float>(swapChainExtent.width),
+		                                           .height   = static_cast<float>(swapChainExtent.height),
+		                                           .minDepth = 0.0f,
+		                                           .maxDepth = 1.0f });
+		commandBuffer.setScissor(0, vk::Rect2D{ .offset = {0, 0}, .extent = swapChainExtent });
+
+		// vertexCount = 3、instanceCount = 1、firstVertex = 0、firstInstance = 0
+		commandBuffer.draw(3, 1, 0, 0);
+
+		commandBuffer.endRendering();
+
+		// 渲染后：vk::ImageLayout::eColorAttachmentOptimal -> vk::ImageLayout::ePresentSrcKHR，
+		// 否则这张图像无法交给呈现引擎
+		transition_image_layout(imageIndex,
+		                      vk::ImageLayout::eColorAttachmentOptimal,
+		                      vk::ImageLayout::ePresentSrcKHR,
+		                      vk::AccessFlagBits2::eColorAttachmentWrite,          // srcAccessMask
+		                      {},                                                  // dstAccessMask
+		                      vk::PipelineStageFlagBits2::eColorAttachmentOutput,   // srcStageMask
+		                      vk::PipelineStageFlagBits2::eBottomOfPipe);           // dstStageMask
+
+		commandBuffer.end();
 	}
 
 	void mainLoop()
